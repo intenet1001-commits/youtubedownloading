@@ -6,7 +6,6 @@ import sys
 import subprocess
 from pathlib import Path
 import threading
-import re
 
 def download_youtube(url, output_dir, format_type, log_callback, status_callback):
     """
@@ -61,170 +60,6 @@ def convert_media(input_file, output_ext, log_callback):
         log_callback(f"변환 실패: {e}")
         return False, str(e)
 
-def get_media_duration(input_file):
-    """
-    Get media file duration in seconds using ffprobe.
-    """
-    cmd = [
-        'ffprobe',
-        '-v', 'quiet',
-        '-show_entries', 'format=duration',
-        '-of', 'default=noprint_wrappers=1:nokey=1',
-        input_file
-    ]
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        duration = float(result.stdout.strip())
-        return duration
-    except (subprocess.CalledProcessError, ValueError):
-        return None
-
-def parse_time_to_seconds(hours, minutes, seconds):
-    """
-    Convert hours, minutes, seconds to total seconds.
-    """
-    try:
-        h = int(hours) if hours else 0
-        m = int(minutes) if minutes else 0
-        s = int(seconds) if seconds else 0
-        return h * 3600 + m * 60 + s
-    except ValueError:
-        return None
-
-def split_media_by_segments(input_file, num_segments, output_dir, log_callback, status_callback, progress_callback=None):
-    """
-    Split media file into specified number of segments using ffmpeg.
-    """
-    if not os.path.exists(input_file):
-        log_callback(f"입력 파일이 존재하지 않습니다: {input_file}")
-        return False, "입력 파일이 존재하지 않습니다"
-    
-    # Get total duration
-    total_duration = get_media_duration(input_file)
-    if total_duration is None:
-        log_callback(f"미디어 파일의 길이를 가져올 수 없습니다: {input_file}")
-        return False, "미디어 파일의 길이를 가져올 수 없습니다"
-    
-    # Calculate segment duration
-    segment_duration = total_duration / num_segments
-    log_callback(f"총 길이: {total_duration:.2f}초, {num_segments}개 구간으로 분할")
-    log_callback(f"각 구간 길이: {segment_duration:.2f}초")
-    
-    # Create output directory if it doesn't exist
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    
-    # Get file info for naming
-    base_name = os.path.splitext(os.path.basename(input_file))[0]
-    file_ext = os.path.splitext(input_file)[1]
-    
-    successful = 0
-    failed = 0
-    
-    for i in range(num_segments):
-        start_time = i * segment_duration
-        # For the last segment, use remaining duration to avoid cutting off
-        if i == num_segments - 1:
-            duration = total_duration - start_time
-        else:
-            duration = segment_duration
-            
-        output_file = os.path.join(output_dir, f"{base_name}_part{i+1:03d}{file_ext}")
-        
-        cmd = [
-            'ffmpeg',
-            '-y',  # overwrite
-            '-i', input_file,
-            '-ss', str(start_time),
-            '-t', str(duration),
-            '-c', 'copy',  # copy codec for faster processing
-            output_file
-        ]
-        
-        try:
-            log_callback(f"구간 {i+1}/{num_segments} 분할 중... ({start_time:.1f}s ~ {start_time + duration:.1f}s)")
-            status_callback(f"분할 중 ({i+1}/{num_segments})...")
-            
-            if progress_callback:
-                progress_callback(i+1, num_segments)
-            
-            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            log_callback(f"구간 {i+1} 완료: {output_file}")
-            successful += 1
-            
-        except subprocess.CalledProcessError as e:
-            log_callback(f"구간 {i+1} 분할 실패: {e}")
-            failed += 1
-    
-    log_callback(f"\n분할 완료! 성공: {successful}, 실패: {failed}")
-    status_callback(f"분할 완료! (성공: {successful}, 실패: {failed})")
-    
-    return failed == 0, f"성공: {successful}, 실패: {failed}"
-
-def split_media_by_duration(input_file, segment_duration, output_dir, log_callback, status_callback, progress_callback=None):
-    """
-    Split media file into segments of specified duration using ffmpeg.
-    """
-    if not os.path.exists(input_file):
-        log_callback(f"입력 파일이 존재하지 않습니다: {input_file}")
-        return False, "입력 파일이 존재하지 않습니다"
-    
-    # Get total duration
-    total_duration = get_media_duration(input_file)
-    if total_duration is None:
-        log_callback(f"미디어 파일의 길이를 가져올 수 없습니다: {input_file}")
-        return False, "미디어 파일의 길이를 가져올 수 없습니다"
-    
-    # Calculate number of segments
-    num_segments = int((total_duration + segment_duration - 1) // segment_duration)
-    log_callback(f"총 길이: {total_duration:.2f}초, 분할 길이: {segment_duration}초")
-    log_callback(f"총 {num_segments}개 구간으로 분할됩니다.")
-    
-    # Create output directory if it doesn't exist
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    
-    # Get file info for naming
-    base_name = os.path.splitext(os.path.basename(input_file))[0]
-    file_ext = os.path.splitext(input_file)[1]
-    
-    successful = 0
-    failed = 0
-    
-    for i in range(num_segments):
-        start_time = i * segment_duration
-        output_file = os.path.join(output_dir, f"{base_name}_part{i+1:03d}{file_ext}")
-        
-        cmd = [
-            'ffmpeg',
-            '-y',  # overwrite
-            '-i', input_file,
-            '-ss', str(start_time),
-            '-t', str(segment_duration),
-            '-c', 'copy',  # copy codec for faster processing
-            output_file
-        ]
-        
-        try:
-            log_callback(f"구간 {i+1}/{num_segments} 분할 중... ({start_time:.1f}s ~ {start_time + segment_duration:.1f}s)")
-            status_callback(f"분할 중 ({i+1}/{num_segments})...")
-            
-            if progress_callback:
-                progress_callback(i+1, num_segments)
-            
-            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            log_callback(f"구간 {i+1} 완료: {output_file}")
-            successful += 1
-            
-        except subprocess.CalledProcessError as e:
-            log_callback(f"구간 {i+1} 분할 실패: {e}")
-            failed += 1
-    
-    log_callback(f"\n분할 완료! 성공: {successful}, 실패: {failed}")
-    status_callback(f"분할 완료! (성공: {successful}, 실패: {failed})")
-    
-    return failed == 0, f"성공: {successful}, 실패: {failed}"
-
 def convert_media_batch(input_files, output_ext, log_callback, status_callback, progress_callback=None):
     """
     Convert multiple media files to another format using ffmpeg.
@@ -267,10 +102,8 @@ class MediaDownloaderConverterGUI:
         tab_control = ttk.Notebook(self.root)
         self.tab1 = ttk.Frame(tab_control)
         self.tab2 = ttk.Frame(tab_control)
-        self.tab3 = ttk.Frame(tab_control)
         tab_control.add(self.tab1, text='YouTube 다운로드')
         tab_control.add(self.tab2, text='미디어 변환')
-        tab_control.add(self.tab3, text='영상 분할')
         tab_control.pack(expand=1, fill='both')
 
         # --- Tab 1: YouTube 다운로드 ---
@@ -354,62 +187,6 @@ class MediaDownloaderConverterGUI:
         # 초기 모드 설정
         self.toggle_file_mode()
 
-        # --- Tab 3: 영상 분할 ---
-        ttk.Label(self.tab3, text="입력 파일:").grid(row=0, column=0, sticky=tk.W, pady=5, padx=5)
-        self.split_input_entry = ttk.Entry(self.tab3, width=50)
-        self.split_input_entry.grid(row=0, column=1, pady=5, sticky=(tk.W, tk.E))
-        ttk.Button(self.tab3, text="찾아보기", command=self.browse_split_input).grid(row=0, column=2, padx=5)
-        ttk.Button(self.tab3, text="폴더 열기", command=self.open_split_input_folder).grid(row=0, column=3, padx=5)
-
-        # 분할 방식 선택
-        ttk.Label(self.tab3, text="분할 방식:").grid(row=1, column=0, sticky=tk.W, pady=5, padx=5)
-        self.split_mode_var = tk.StringVar(value="duration")
-        ttk.Radiobutton(self.tab3, text="시간 간격", variable=self.split_mode_var, value="duration", command=self.toggle_split_mode).grid(row=1, column=1, sticky=tk.W)
-        ttk.Radiobutton(self.tab3, text="구간 수", variable=self.split_mode_var, value="segments", command=self.toggle_split_mode).grid(row=1, column=2, sticky=tk.W)
-
-        # 시간 간격 입력 프레임
-        self.duration_frame = ttk.Frame(self.tab3)
-        self.duration_frame.grid(row=2, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=5)
-        
-        ttk.Label(self.duration_frame, text="분할 시간:").grid(row=0, column=0, sticky=tk.W, padx=5)
-        self.hours_var = tk.StringVar(value="0")
-        self.minutes_var = tk.StringVar(value="1")
-        self.seconds_var = tk.StringVar(value="0")
-        
-        ttk.Entry(self.duration_frame, textvariable=self.hours_var, width=3).grid(row=0, column=1, padx=2)
-        ttk.Label(self.duration_frame, text="시").grid(row=0, column=2, padx=2)
-        ttk.Entry(self.duration_frame, textvariable=self.minutes_var, width=3).grid(row=0, column=3, padx=2)
-        ttk.Label(self.duration_frame, text="분").grid(row=0, column=4, padx=2)
-        ttk.Entry(self.duration_frame, textvariable=self.seconds_var, width=3).grid(row=0, column=5, padx=2)
-        ttk.Label(self.duration_frame, text="초").grid(row=0, column=6, padx=2)
-
-        # 구간 수 입력 프레임
-        self.segments_frame = ttk.Frame(self.tab3)
-        self.segments_frame.grid(row=3, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=5)
-        
-        ttk.Label(self.segments_frame, text="구간 수:").grid(row=0, column=0, sticky=tk.W, padx=5)
-        self.num_segments_var = tk.StringVar(value="5")
-        ttk.Entry(self.segments_frame, textvariable=self.num_segments_var, width=10).grid(row=0, column=1, sticky=tk.W, padx=5)
-        ttk.Label(self.segments_frame, text="개").grid(row=0, column=2, sticky=tk.W, padx=2)
-
-        ttk.Label(self.tab3, text="출력 폴더:").grid(row=4, column=0, sticky=tk.W, pady=5, padx=5)
-        self.split_output_entry = ttk.Entry(self.tab3, width=50)
-        self.split_output_entry.insert(0, str(Path.home() / "Downloads" / "split"))
-        self.split_output_entry.grid(row=4, column=1, pady=5, sticky=(tk.W, tk.E))
-        ttk.Button(self.tab3, text="찾아보기", command=self.browse_split_output).grid(row=4, column=2, padx=5)
-        ttk.Button(self.tab3, text="폴더 열기", command=self.open_split_output_folder).grid(row=4, column=3, padx=5)
-
-        # 분할 진행률 표시바
-        self.split_progress_var = tk.DoubleVar()
-        self.split_progress_bar = ttk.Progressbar(self.tab3, variable=self.split_progress_var, maximum=100, length=300)
-        self.split_progress_bar.grid(row=5, column=0, columnspan=3, pady=10, sticky=(tk.W, tk.E))
-
-        self.split_btn = ttk.Button(self.tab3, text="분할", command=self.start_split)
-        self.split_btn.grid(row=5, column=3, padx=5)
-
-        # 초기 모드 설정
-        self.toggle_split_mode()
-
         # --- Status & Log ---
         self.status_label = ttk.Label(self.root, text="대기 중...", relief=tk.SUNKEN, anchor=tk.W)
         self.status_label.pack(side=tk.BOTTOM, fill=tk.X)
@@ -426,10 +203,8 @@ class MediaDownloaderConverterGUI:
         for i in range(4):
             self.tab1.columnconfigure(i, weight=1)
             self.tab2.columnconfigure(i, weight=1)
-            self.tab3.columnconfigure(i, weight=1)
         self.tab1.rowconfigure(10, weight=1)
         self.tab2.rowconfigure(2, weight=1)
-        self.tab3.rowconfigure(4, weight=1)
         self.single_file_frame.columnconfigure(0, weight=1)
         options_frame.columnconfigure(2, weight=1)
 
@@ -578,134 +353,6 @@ class MediaDownloaderConverterGUI:
                 subprocess.Popen(["xdg-open", folder])
         except Exception as e:
             messagebox.showerror("오류", f"폴더를 열 수 없습니다: {e}")
-
-    def browse_split_input(self):
-        file = filedialog.askopenfilename(
-            title="분할할 영상 파일 선택",
-            filetypes=[("비디오 파일", "*.mp4 *.mov *.avi *.mkv *.flv"), ("모든 파일", "*.*")]
-        )
-        if file:
-            self.split_input_entry.delete(0, tk.END)
-            self.split_input_entry.insert(0, file)
-
-    def browse_split_output(self):
-        folder = filedialog.askdirectory(initialdir=str(Path.home() / "Downloads"))
-        if folder:
-            self.split_output_entry.delete(0, tk.END)
-            self.split_output_entry.insert(0, folder)
-
-    def open_split_input_folder(self):
-        file_path = self.split_input_entry.get().strip()
-        if not file_path or not os.path.exists(file_path):
-            messagebox.showerror("오류", "입력 파일을 먼저 선택하세요.")
-            return
-        folder = os.path.dirname(file_path)
-        if not os.path.exists(folder):
-            messagebox.showerror("오류", "폴더가 존재하지 않습니다.")
-            return
-        try:
-            if sys.platform == "win32":
-                os.startfile(folder)
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", folder])
-            else:
-                subprocess.Popen(["xdg-open", folder])
-        except Exception as e:
-            messagebox.showerror("오류", f"폴더를 열 수 없습니다: {e}")
-
-    def open_split_output_folder(self):
-        folder = self.split_output_entry.get().strip()
-        if not os.path.exists(folder):
-            messagebox.showerror("오류", "폴더가 존재하지 않습니다.")
-            return
-        try:
-            if sys.platform == "win32":
-                os.startfile(folder)
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", folder])
-            else:
-                subprocess.Popen(["xdg-open", folder])
-        except Exception as e:
-            messagebox.showerror("오류", f"폴더를 열 수 없습니다: {e}")
-
-    def toggle_split_mode(self):
-        mode = self.split_mode_var.get()
-        if mode == "duration":
-            self.duration_frame.grid()
-            self.segments_frame.grid_remove()
-        else:
-            self.duration_frame.grid_remove()
-            self.segments_frame.grid()
-
-    def update_split_progress(self, current, total):
-        progress = (current / total) * 100
-        self.split_progress_var.set(progress)
-        self.root.update()
-
-    def start_split(self):
-        input_file = self.split_input_entry.get().strip()
-        output_dir = self.split_output_entry.get().strip()
-        mode = self.split_mode_var.get()
-        
-        if not input_file or not os.path.exists(input_file):
-            messagebox.showerror("오류", "입력 파일을 선택하세요.")
-            return
-        
-        if not output_dir:
-            messagebox.showerror("오류", "출력 폴더를 선택하세요.")
-            return
-        
-        if mode == "duration":
-            # 시간 간격 모드
-            total_seconds = parse_time_to_seconds(
-                self.hours_var.get().strip(),
-                self.minutes_var.get().strip(),
-                self.seconds_var.get().strip()
-            )
-            
-            if total_seconds is None or total_seconds <= 0:
-                messagebox.showerror("오류", "올바른 시간을 입력하세요 (예: 0시 1분 30초)")
-                return
-            
-            self.split_progress_var.set(0)
-            self.set_status("영상 분할 중...")
-            threading.Thread(target=self._split_video_by_duration, args=(input_file, total_seconds, output_dir), daemon=True).start()
-            
-        else:
-            # 구간 수 모드
-            try:
-                num_segments = int(self.num_segments_var.get().strip())
-                if num_segments <= 0:
-                    raise ValueError("구간 수는 1 이상이어야 합니다.")
-            except ValueError:
-                messagebox.showerror("오류", "올바른 구간 수를 입력하세요 (예: 5)")
-                return
-            
-            self.split_progress_var.set(0)
-            self.set_status("영상 분할 중...")
-            threading.Thread(target=self._split_video_by_segments, args=(input_file, num_segments, output_dir), daemon=True).start()
-
-    def _split_video_by_duration(self, input_file, segment_duration, output_dir):
-        success, result = split_media_by_duration(input_file, segment_duration, output_dir, self.log_message, self.set_status, self.update_split_progress)
-        if success:
-            self.split_progress_var.set(100)
-            self.set_status("분할 완료!")
-            messagebox.showinfo("완료", f"영상 분할 완료!\n{result}")
-        else:
-            self.set_status("분할 오류")
-            messagebox.showerror("오류", result)
-        self.set_status("대기 중...")
-
-    def _split_video_by_segments(self, input_file, num_segments, output_dir):
-        success, result = split_media_by_segments(input_file, num_segments, output_dir, self.log_message, self.set_status, self.update_split_progress)
-        if success:
-            self.split_progress_var.set(100)
-            self.set_status("분할 완료!")
-            messagebox.showinfo("완료", f"영상 분할 완료!\n{result}")
-        else:
-            self.set_status("분할 오류")
-            messagebox.showerror("오류", result)
-        self.set_status("대기 중...")
 
 def main():
     root = tk.Tk()
