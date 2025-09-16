@@ -225,6 +225,71 @@ def split_media_by_duration(input_file, segment_duration, output_dir, log_callba
     
     return failed == 0, f"성공: {successful}, 실패: {failed}"
 
+def merge_media_files(input_files, output_file, log_callback, status_callback, progress_callback=None):
+    """
+    Merge multiple media files into one using ffmpeg.
+    """
+    if len(input_files) < 2:
+        log_callback("합칠 파일이 최소 2개 이상 필요합니다.")
+        return False, "합칠 파일이 최소 2개 이상 필요합니다."
+    
+    # Create a text file listing all input files
+    temp_list_file = "temp_merge_list.txt"
+    try:
+        with open(temp_list_file, 'w', encoding='utf-8') as f:
+            for input_file in input_files:
+                if not os.path.exists(input_file):
+                    log_callback(f"파일이 존재하지 않습니다: {input_file}")
+                    return False, f"파일이 존재하지 않습니다: {input_file}"
+                # Escape single quotes for ffmpeg
+                escaped_path = input_file.replace("'", "'\"'\"'")
+                f.write(f"file '{escaped_path}'\n")
+        
+        log_callback(f"총 {len(input_files)}개 파일을 합칩니다.")
+        log_callback(f"출력 파일: {output_file}")
+        
+        # FFmpeg command to concatenate files
+        cmd = [
+            'ffmpeg',
+            '-y',  # overwrite output file
+            '-f', 'concat',
+            '-safe', '0',
+            '-i', temp_list_file,
+            '-c', 'copy',  # copy streams without re-encoding for speed
+            output_file
+        ]
+        
+        status_callback("미디어 파일 합치는 중...")
+        if progress_callback:
+            progress_callback(1, 1)
+        
+        log_callback("합치기 시작...")
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        
+        log_callback(f"합치기 완료: {output_file}")
+        status_callback("합치기 완료!")
+        
+        if progress_callback:
+            progress_callback(1, 1)
+        
+        return True, output_file
+        
+    except subprocess.CalledProcessError as e:
+        error_msg = f"합치기 실패: {e.stderr if e.stderr else str(e)}"
+        log_callback(error_msg)
+        return False, error_msg
+    except Exception as e:
+        error_msg = f"합치기 중 오류 발생: {str(e)}"
+        log_callback(error_msg)
+        return False, error_msg
+    finally:
+        # Clean up temporary file
+        if os.path.exists(temp_list_file):
+            try:
+                os.remove(temp_list_file)
+            except:
+                pass
+
 def convert_media_batch(input_files, output_ext, log_callback, status_callback, progress_callback=None):
     """
     Convert multiple media files to another format using ffmpeg.
@@ -268,9 +333,11 @@ class MediaDownloaderConverterGUI:
         self.tab1 = ttk.Frame(tab_control)
         self.tab2 = ttk.Frame(tab_control)
         self.tab3 = ttk.Frame(tab_control)
+        self.tab4 = ttk.Frame(tab_control)
         tab_control.add(self.tab1, text='YouTube 다운로드')
         tab_control.add(self.tab2, text='미디어 변환')
         tab_control.add(self.tab3, text='영상 분할')
+        tab_control.add(self.tab4, text='미디어 합치기')
         tab_control.pack(expand=1, fill='both')
 
         # --- Tab 1: YouTube 다운로드 ---
@@ -410,6 +477,50 @@ class MediaDownloaderConverterGUI:
         # 초기 모드 설정
         self.toggle_split_mode()
 
+        # --- Tab 4: 미디어 합치기 ---
+        # 파일 목록 선택
+        ttk.Label(self.tab4, text="합칠 파일들:").grid(row=0, column=0, sticky=(tk.W, tk.N), pady=5, padx=5)
+        
+        merge_files_frame = ttk.Frame(self.tab4)
+        merge_files_frame.grid(row=0, column=1, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=5, padx=5)
+        
+        # 파일 관리 버튼들
+        merge_control_frame = ttk.Frame(merge_files_frame)
+        merge_control_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        ttk.Button(merge_control_frame, text="파일 추가", command=self.add_merge_files).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(merge_control_frame, text="파일 제거", command=self.remove_merge_files).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(merge_control_frame, text="모두 제거", command=self.clear_merge_files).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(merge_control_frame, text="위로", command=self.move_merge_file_up).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(merge_control_frame, text="아래로", command=self.move_merge_file_down).pack(side=tk.LEFT, padx=(0, 5))
+        
+        # 파일 리스트박스 (순서 조정 가능)
+        merge_list_frame = ttk.Frame(merge_files_frame)
+        merge_list_frame.pack(fill=tk.BOTH, expand=True)
+        
+        self.merge_files_listbox = tk.Listbox(merge_list_frame, height=8, selectmode=tk.EXTENDED)
+        merge_scrollbar = ttk.Scrollbar(merge_list_frame, orient=tk.VERTICAL, command=self.merge_files_listbox.yview)
+        self.merge_files_listbox.configure(yscrollcommand=merge_scrollbar.set)
+        self.merge_files_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        merge_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.merge_file_list = []  # 합칠 파일 목록 저장
+        
+        # 출력 파일 설정
+        ttk.Label(self.tab4, text="출력 파일:").grid(row=1, column=0, sticky=tk.W, pady=5, padx=5)
+        self.merge_output_entry = ttk.Entry(self.tab4, width=50)
+        self.merge_output_entry.grid(row=1, column=1, pady=5, sticky=(tk.W, tk.E))
+        ttk.Button(self.tab4, text="찾아보기", command=self.browse_merge_output).grid(row=1, column=2, padx=5)
+        ttk.Button(self.tab4, text="폴더 열기", command=self.open_merge_output_folder).grid(row=1, column=3, padx=5)
+        
+        # 합치기 진행률 표시바
+        self.merge_progress_var = tk.DoubleVar()
+        self.merge_progress_bar = ttk.Progressbar(self.tab4, variable=self.merge_progress_var, maximum=100, length=300)
+        self.merge_progress_bar.grid(row=2, column=0, columnspan=3, pady=10, sticky=(tk.W, tk.E))
+        
+        self.merge_btn = ttk.Button(self.tab4, text="합치기", command=self.start_merge)
+        self.merge_btn.grid(row=2, column=3, padx=5)
+
         # --- Status & Log ---
         self.status_label = ttk.Label(self.root, text="대기 중...", relief=tk.SUNKEN, anchor=tk.W)
         self.status_label.pack(side=tk.BOTTOM, fill=tk.X)
@@ -427,9 +538,11 @@ class MediaDownloaderConverterGUI:
             self.tab1.columnconfigure(i, weight=1)
             self.tab2.columnconfigure(i, weight=1)
             self.tab3.columnconfigure(i, weight=1)
+            self.tab4.columnconfigure(i, weight=1)
         self.tab1.rowconfigure(10, weight=1)
         self.tab2.rowconfigure(2, weight=1)
         self.tab3.rowconfigure(4, weight=1)
+        self.tab4.rowconfigure(0, weight=1)
         self.single_file_frame.columnconfigure(0, weight=1)
         options_frame.columnconfigure(2, weight=1)
 
@@ -704,6 +817,158 @@ class MediaDownloaderConverterGUI:
             messagebox.showinfo("완료", f"영상 분할 완료!\n{result}")
         else:
             self.set_status("분할 오류")
+            messagebox.showerror("오류", result)
+        self.set_status("대기 중...")
+
+    # 미디어 합치기 관련 메서드들
+    def add_merge_files(self):
+        files = filedialog.askopenfilenames(
+            title="합칠 파일들 선택",
+            filetypes=[("미디어 파일", "*.mp4 *.mp3 *.mov *.avi *.wav *.flv *.mkv"), ("모든 파일", "*.*")]
+        )
+        for file in files:
+            if file not in self.merge_file_list:
+                self.merge_file_list.append(file)
+                self.merge_files_listbox.insert(tk.END, os.path.basename(file))
+    
+    def remove_merge_files(self):
+        selected_indices = list(self.merge_files_listbox.curselection())
+        selected_indices.reverse()
+        for index in selected_indices:
+            del self.merge_file_list[index]
+            self.merge_files_listbox.delete(index)
+    
+    def clear_merge_files(self):
+        self.merge_file_list.clear()
+        self.merge_files_listbox.delete(0, tk.END)
+    
+    def move_merge_file_up(self):
+        selected_indices = list(self.merge_files_listbox.curselection())
+        if not selected_indices:
+            messagebox.showinfo("안내", "이동할 파일을 선택하세요.")
+            return
+        
+        for index in selected_indices:
+            if index > 0:
+                # 리스트에서 항목 교체
+                self.merge_file_list[index], self.merge_file_list[index-1] = self.merge_file_list[index-1], self.merge_file_list[index]
+                
+                # 리스트박스에서 항목 교체
+                item = self.merge_files_listbox.get(index)
+                self.merge_files_listbox.delete(index)
+                self.merge_files_listbox.insert(index-1, item)
+                
+                # 선택 상태 유지
+                self.merge_files_listbox.selection_clear(index)
+                self.merge_files_listbox.selection_set(index-1)
+    
+    def move_merge_file_down(self):
+        selected_indices = list(self.merge_files_listbox.curselection())
+        if not selected_indices:
+            messagebox.showinfo("안내", "이동할 파일을 선택하세요.")
+            return
+        
+        # 아래로 이동할 때는 역순으로 처리
+        selected_indices.reverse()
+        for index in selected_indices:
+            if index < len(self.merge_file_list) - 1:
+                # 리스트에서 항목 교체
+                self.merge_file_list[index], self.merge_file_list[index+1] = self.merge_file_list[index+1], self.merge_file_list[index]
+                
+                # 리스트박스에서 항목 교체
+                item = self.merge_files_listbox.get(index)
+                self.merge_files_listbox.delete(index)
+                self.merge_files_listbox.insert(index+1, item)
+                
+                # 선택 상태 유지
+                self.merge_files_listbox.selection_clear(index)
+                self.merge_files_listbox.selection_set(index+1)
+    
+    def browse_merge_output(self):
+        file = filedialog.asksaveasfilename(
+            title="출력 파일 저장",
+            defaultextension=".mp4",
+            filetypes=[
+                ("MP4 파일", "*.mp4"),
+                ("MP3 파일", "*.mp3"),
+                ("MOV 파일", "*.mov"),
+                ("AVI 파일", "*.avi"),
+                ("모든 파일", "*.*")
+            ]
+        )
+        if file:
+            self.merge_output_entry.delete(0, tk.END)
+            self.merge_output_entry.insert(0, file)
+    
+    def open_merge_output_folder(self):
+        output_path = self.merge_output_entry.get().strip()
+        if not output_path:
+            messagebox.showerror("오류", "출력 파일 경로를 먼저 설정하세요.")
+            return
+        
+        folder = os.path.dirname(output_path)
+        if not os.path.exists(folder):
+            messagebox.showerror("오류", "폴더가 존재하지 않습니다.")
+            return
+        
+        try:
+            if sys.platform == "win32":
+                os.startfile(folder)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", folder])
+            else:
+                subprocess.Popen(["xdg-open", folder])
+        except Exception as e:
+            messagebox.showerror("오류", f"폴더를 열 수 없습니다: {e}")
+    
+    def update_merge_progress(self, current, total):
+        progress = (current / total) * 100
+        self.merge_progress_var.set(progress)
+        self.root.update()
+    
+    def start_merge(self):
+        if len(self.merge_file_list) < 2:
+            messagebox.showerror("오류", "합칠 파일을 최소 2개 이상 선택하세요.")
+            return
+        
+        output_file = self.merge_output_entry.get().strip()
+        if not output_file:
+            messagebox.showerror("오류", "출력 파일 경로를 설정하세요.")
+            return
+        
+        # 출력 디렉토리 생성
+        output_dir = os.path.dirname(output_file)
+        if not os.path.exists(output_dir):
+            try:
+                os.makedirs(output_dir)
+            except Exception as e:
+                messagebox.showerror("오류", f"출력 폴더 생성 실패: {str(e)}")
+                return
+        
+        # 파일 존재 확인
+        valid_files = []
+        for file_path in self.merge_file_list:
+            if os.path.exists(file_path):
+                valid_files.append(file_path)
+            else:
+                self.log_message(f"파일을 찾을 수 없습니다: {file_path}")
+        
+        if len(valid_files) < 2:
+            messagebox.showerror("오류", "유효한 파일이 2개 미만입니다.")
+            return
+        
+        self.merge_progress_var.set(0)
+        self.set_status("미디어 합치는 중...")
+        threading.Thread(target=self._merge_files, args=(valid_files, output_file), daemon=True).start()
+    
+    def _merge_files(self, input_files, output_file):
+        success, result = merge_media_files(input_files, output_file, self.log_message, self.set_status, self.update_merge_progress)
+        if success:
+            self.merge_progress_var.set(100)
+            self.set_status("합치기 완료!")
+            messagebox.showinfo("완료", f"미디어 합치기 완료!\n출력: {result}")
+        else:
+            self.set_status("합치기 오류")
             messagebox.showerror("오류", result)
         self.set_status("대기 중...")
 

@@ -1,0 +1,3 @@
+([('YouTube다운로더_미디어변환기',
+   '/Users/choichunsung/Documents/GitHub/myproduct_v4/youtubedownloading/dist/YouTube다운로더_미디어변환기',
+   'EXECUTABLE')],)
