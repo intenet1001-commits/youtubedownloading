@@ -7,6 +7,15 @@ import subprocess
 from pathlib import Path
 import threading
 import re
+import tempfile
+from docx import Document
+from pptx import Presentation
+from pptx.util import Inches
+import PyPDF2
+import markdown
+import pypandoc
+from PIL import Image
+import io
 
 def download_youtube(url, output_dir, format_type, log_callback, status_callback):
     """
@@ -320,10 +329,524 @@ def convert_media_batch(input_files, output_ext, log_callback, status_callback, 
     else:
         messagebox.showwarning("완료", f"배치 변환 완료\n성공: {successful}개, 실패: {failed}개")
 
+def extract_text_from_pdf(pdf_path):
+    """PDF에서 텍스트 추출"""
+    text = ""
+    try:
+        with open(pdf_path, 'rb') as file:
+            pdf_reader = PyPDF2.PdfReader(file)
+            for page in pdf_reader.pages:
+                text += page.extract_text() + "\n"
+    except Exception as e:
+        raise Exception(f"PDF 텍스트 추출 실패: {str(e)}")
+    return text
+
+def extract_structured_content_from_pdf(pdf_path):
+    """PDF에서 구조화된 콘텐츠 추출 (페이지별 구조 보존)"""
+    try:
+        content = []
+        
+        with open(pdf_path, 'rb') as file:
+            pdf_reader = PyPDF2.PdfReader(file)
+            
+            for i, page in enumerate(pdf_reader.pages, 1):
+                page_text = page.extract_text()
+                if page_text.strip():
+                    page_content = []
+                    page_content.append(f"## 페이지 {i}")
+                    
+                    # 텍스트를 줄별로 처리
+                    lines = page_text.strip().split('\n')
+                    processed_lines = []
+                    
+                    for line in lines:
+                        line = line.strip()
+                        if not line:
+                            continue
+                            
+                        # 제목처럼 보이는 줄 감지 (대문자 비율이 높거나 짧은 줄)
+                        if len(line) < 100 and (line.isupper() or line.count(' ') < 5):
+                            processed_lines.append(f"### {line}")
+                        # 리스트 항목 감지
+                        elif line.startswith(('•', '-', '*', '·', '○')) or re.match(r'^\d+[.)]\s', line):
+                            processed_lines.append(f"- {line.lstrip('•-*·○ ').lstrip('0123456789.) ')}")
+                        # 일반 텍스트
+                        else:
+                            processed_lines.append(line)
+                    
+                    # 연속된 줄을 문단으로 합치기
+                    paragraphs = []
+                    current_paragraph = []
+                    
+                    for line in processed_lines:
+                        if line.startswith(('#', '-')):
+                            if current_paragraph:
+                                paragraphs.append(' '.join(current_paragraph))
+                                current_paragraph = []
+                            paragraphs.append(line)
+                        else:
+                            current_paragraph.append(line)
+                    
+                    if current_paragraph:
+                        paragraphs.append(' '.join(current_paragraph))
+                    
+                    page_content.extend(paragraphs)
+                    content.append('\n\n'.join(page_content))
+        
+        return '\n\n---\n\n'.join(content)
+    except Exception as e:
+        # 실패 시 기본 텍스트 추출로 폴백
+        return extract_text_from_pdf(pdf_path)
+
+def extract_text_from_docx(docx_path):
+    """DOCX에서 텍스트 추출"""
+    try:
+        doc = Document(docx_path)
+        text = ""
+        for paragraph in doc.paragraphs:
+            text += paragraph.text + "\n"
+        return text
+    except Exception as e:
+        raise Exception(f"DOCX 텍스트 추출 실패: {str(e)}")
+
+def extract_structured_content_from_docx(docx_path):
+    """DOCX에서 구조화된 콘텐츠 추출 (표, 리스트, 서식 포함)"""
+    try:
+        doc = Document(docx_path)
+        content = []
+        
+        for element in doc.element.body:
+            if element.tag.endswith('p'):  # 문단
+                para = None
+                for p in doc.paragraphs:
+                    if p._element == element:
+                        para = p
+                        break
+                if para:
+                    # 문단 스타일 확인
+                    style_name = para.style.name if para.style else "Normal"
+                    text = para.text.strip()
+                    
+                    if text:
+                        if "Heading" in style_name:
+                            level = 1
+                            if "1" in style_name:
+                                level = 1
+                            elif "2" in style_name:
+                                level = 2
+                            elif "3" in style_name:
+                                level = 3
+                            elif "4" in style_name:
+                                level = 4
+                            elif "5" in style_name:
+                                level = 5
+                            elif "6" in style_name:
+                                level = 6
+                            content.append(f"{'#' * level} {text}")
+                        elif "List" in style_name or para.text.strip().startswith(('-', '*', '+')):
+                            content.append(f"- {text}")
+                        else:
+                            # 볼드, 이탤릭 처리
+                            formatted_text = ""
+                            for run in para.runs:
+                                run_text = run.text
+                                if run.bold and run.italic:
+                                    formatted_text += f"***{run_text}***"
+                                elif run.bold:
+                                    formatted_text += f"**{run_text}**"
+                                elif run.italic:
+                                    formatted_text += f"*{run_text}*"
+                                else:
+                                    formatted_text += run_text
+                            content.append(formatted_text if formatted_text.strip() else text)
+            
+            elif element.tag.endswith('tbl'):  # 표
+                table = None
+                for t in doc.tables:
+                    if t._element == element:
+                        table = t
+                        break
+                if table:
+                    content.append(convert_table_to_markdown(table))
+        
+        return "\n\n".join(content)
+    except Exception as e:
+        # 실패 시 기본 텍스트 추출로 폴백
+        return extract_text_from_docx(docx_path)
+
+def convert_table_to_markdown(table):
+    """Word 표를 마크다운 표 형식으로 변환"""
+    if not table.rows:
+        return ""
+    
+    markdown_table = []
+    
+    # 헤더 행
+    header_row = []
+    for cell in table.rows[0].cells:
+        header_row.append(cell.text.strip() or " ")
+    markdown_table.append("| " + " | ".join(header_row) + " |")
+    
+    # 구분선
+    separator = "| " + " | ".join(["---"] * len(header_row)) + " |"
+    markdown_table.append(separator)
+    
+    # 데이터 행들
+    for row in table.rows[1:]:
+        data_row = []
+        for cell in row.cells:
+            data_row.append(cell.text.strip() or " ")
+        markdown_table.append("| " + " | ".join(data_row) + " |")
+    
+    return "\n".join(markdown_table)
+
+def extract_text_from_pptx(pptx_path):
+    """PPTX에서 텍스트 추출"""
+    try:
+        prs = Presentation(pptx_path)
+        text = ""
+        for slide in prs.slides:
+            for shape in slide.shapes:
+                if hasattr(shape, "text"):
+                    text += shape.text + "\n"
+        return text
+    except Exception as e:
+        raise Exception(f"PPTX 텍스트 추출 실패: {str(e)}")
+
+def extract_structured_content_from_pptx(pptx_path):
+    """PPTX에서 구조화된 콘텐츠 추출 (슬라이드별 구조 보존)"""
+    try:
+        prs = Presentation(pptx_path)
+        content = []
+        
+        for i, slide in enumerate(prs.slides, 1):
+            slide_content = []
+            slide_content.append(f"## 슬라이드 {i}")
+            
+            # 슬라이드의 모든 shape 처리
+            shapes_processed = []
+            
+            for shape in slide.shapes:
+                # 표 처리
+                if shape.has_table:
+                    table_md = convert_pptx_table_to_markdown(shape.table)
+                    if table_md:
+                        slide_content.append("\n" + table_md + "\n")
+                    shapes_processed.append(shape)
+                
+                # 텍스트 처리
+                elif hasattr(shape, "text") and shape.text.strip():
+                    text = shape.text.strip()
+                    
+                    # 제목 슬라이드의 경우 첫 번째 텍스트는 제목, 두 번째는 부제목
+                    if i == 1 and len(shapes_processed) == 0:
+                        slide_content.append(f"### {text}")
+                    elif i == 1 and len(shapes_processed) == 1:
+                        slide_content.append(f"*{text}*")
+                    else:
+                        # 일반 슬라이드의 첫 번째 텍스트는 제목
+                        if len([s for s in shapes_processed if hasattr(s, "text")]) == 0:
+                            slide_content.append(f"### {text}")
+                        else:
+                            # 나머지 텍스트 처리
+                            text_lines = text.split('\n')
+                            for line in text_lines:
+                                line = line.strip()
+                                if line:
+                                    if line.startswith(('•', '-', '*')) or re.match(r'^\d+\.', line):
+                                        slide_content.append(f"- {line.lstrip('•-* ').lstrip('0123456789. ')}")
+                                    else:
+                                        slide_content.append(line)
+                    
+                    shapes_processed.append(shape)
+            
+            if len(slide_content) > 1:  # 제목 외에 내용이 있는 경우만 추가
+                content.append("\n".join(slide_content))
+        
+        return "\n\n---\n\n".join(content)
+    except Exception as e:
+        # 실패 시 기본 텍스트 추출로 폴백
+        return extract_text_from_pptx(pptx_path)
+
+def convert_pptx_table_to_markdown(table):
+    """PowerPoint 표를 마크다운 표 형식으로 변환"""
+    if not table.rows:
+        return ""
+    
+    markdown_table = []
+    
+    # 헤더 행
+    header_row = []
+    for cell in table.rows[0].cells:
+        header_row.append(cell.text.strip() or " ")
+    markdown_table.append("| " + " | ".join(header_row) + " |")
+    
+    # 구분선
+    separator = "| " + " | ".join(["---"] * len(header_row)) + " |"
+    markdown_table.append(separator)
+    
+    # 데이터 행들
+    for row in table.rows[1:]:
+        data_row = []
+        for cell in row.cells:
+            data_row.append(cell.text.strip() or " ")
+        markdown_table.append("| " + " | ".join(data_row) + " |")
+    
+    return "\n".join(markdown_table)
+
+def convert_pdf_to_docx(pdf_path, output_path, log_callback):
+    """PDF를 DOCX로 변환"""
+    try:
+        log_callback(f"PDF → DOCX 변환 시작: {pdf_path}")
+        text = extract_text_from_pdf(pdf_path)
+        
+        doc = Document()
+        doc.add_paragraph(text)
+        doc.save(output_path)
+        
+        log_callback(f"변환 완료: {output_path}")
+        return True, output_path
+    except Exception as e:
+        error_msg = f"PDF → DOCX 변환 실패: {str(e)}"
+        log_callback(error_msg)
+        return False, error_msg
+
+def convert_pdf_to_md(pdf_path, output_path, log_callback):
+    """PDF를 MD로 변환 (구조화된 형식 유지)"""
+    try:
+        log_callback(f"PDF → MD 변환 시작: {pdf_path}")
+        structured_content = extract_structured_content_from_pdf(pdf_path)
+        
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(f"# {os.path.splitext(os.path.basename(pdf_path))[0]}\n\n")
+            f.write(structured_content)
+        
+        log_callback(f"변환 완료: {output_path}")
+        return True, output_path
+    except Exception as e:
+        error_msg = f"PDF → MD 변환 실패: {str(e)}"
+        log_callback(error_msg)
+        return False, error_msg
+
+def convert_pdf_to_pptx(pdf_path, output_path, log_callback):
+    """PDF를 PPTX로 변환"""
+    try:
+        log_callback(f"PDF → PPTX 변환 시작: {pdf_path}")
+        text = extract_text_from_pdf(pdf_path)
+        
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[1])
+        title = slide.shapes.title
+        content = slide.placeholders[1]
+        
+        title.text = os.path.splitext(os.path.basename(pdf_path))[0]
+        content.text = text[:1000] + "..." if len(text) > 1000 else text
+        
+        prs.save(output_path)
+        
+        log_callback(f"변환 완료: {output_path}")
+        return True, output_path
+    except Exception as e:
+        error_msg = f"PDF → PPTX 변환 실패: {str(e)}"
+        log_callback(error_msg)
+        return False, error_msg
+
+def convert_docx_to_pdf(docx_path, output_path, log_callback):
+    """DOCX를 PDF로 변환 (pandoc 사용)"""
+    try:
+        log_callback(f"DOCX → PDF 변환 시작: {docx_path}")
+        pypandoc.convert_file(docx_path, 'pdf', outputfile=output_path)
+        log_callback(f"변환 완료: {output_path}")
+        return True, output_path
+    except Exception as e:
+        error_msg = f"DOCX → PDF 변환 실패: {str(e)}"
+        log_callback(error_msg)
+        return False, error_msg
+
+def convert_docx_to_md(docx_path, output_path, log_callback):
+    """DOCX를 MD로 변환 (표, 리스트, 서식 유지)"""
+    try:
+        log_callback(f"DOCX → MD 변환 시작: {docx_path}")
+        structured_content = extract_structured_content_from_docx(docx_path)
+        
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(f"# {os.path.splitext(os.path.basename(docx_path))[0]}\n\n")
+            f.write(structured_content)
+        
+        log_callback(f"변환 완료: {output_path}")
+        return True, output_path
+    except Exception as e:
+        error_msg = f"DOCX → MD 변환 실패: {str(e)}"
+        log_callback(error_msg)
+        return False, error_msg
+
+def convert_docx_to_pptx(docx_path, output_path, log_callback):
+    """DOCX를 PPTX로 변환"""
+    try:
+        log_callback(f"DOCX → PPTX 변환 시작: {docx_path}")
+        text = extract_text_from_docx(docx_path)
+        
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[1])
+        title = slide.shapes.title
+        content = slide.placeholders[1]
+        
+        title.text = os.path.splitext(os.path.basename(docx_path))[0]
+        content.text = text[:1000] + "..." if len(text) > 1000 else text
+        
+        prs.save(output_path)
+        
+        log_callback(f"변환 완료: {output_path}")
+        return True, output_path
+    except Exception as e:
+        error_msg = f"DOCX → PPTX 변환 실패: {str(e)}"
+        log_callback(error_msg)
+        return False, error_msg
+
+def convert_pptx_to_pdf(pptx_path, output_path, log_callback):
+    """PPTX를 PDF로 변환"""
+    try:
+        log_callback(f"PPTX → PDF 변환 시작: {pptx_path}")
+        text = extract_text_from_pptx(pptx_path)
+        
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as temp_file:
+            temp_file.write(text)
+            temp_md_path = temp_file.name
+        
+        pypandoc.convert_file(temp_md_path, 'pdf', outputfile=output_path)
+        os.unlink(temp_md_path)
+        
+        log_callback(f"변환 완료: {output_path}")
+        return True, output_path
+    except Exception as e:
+        error_msg = f"PPTX → PDF 변환 실패: {str(e)}"
+        log_callback(error_msg)
+        return False, error_msg
+
+def convert_pptx_to_docx(pptx_path, output_path, log_callback):
+    """PPTX를 DOCX로 변환"""
+    try:
+        log_callback(f"PPTX → DOCX 변환 시작: {pptx_path}")
+        text = extract_text_from_pptx(pptx_path)
+        
+        doc = Document()
+        doc.add_paragraph(text)
+        doc.save(output_path)
+        
+        log_callback(f"변환 완료: {output_path}")
+        return True, output_path
+    except Exception as e:
+        error_msg = f"PPTX → DOCX 변환 실패: {str(e)}"
+        log_callback(error_msg)
+        return False, error_msg
+
+def convert_pptx_to_md(pptx_path, output_path, log_callback):
+    """PPTX를 MD로 변환 (슬라이드 구조, 표 유지)"""
+    try:
+        log_callback(f"PPTX → MD 변환 시작: {pptx_path}")
+        structured_content = extract_structured_content_from_pptx(pptx_path)
+        
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(f"# {os.path.splitext(os.path.basename(pptx_path))[0]}\n\n")
+            f.write(structured_content)
+        
+        log_callback(f"변환 완료: {output_path}")
+        return True, output_path
+    except Exception as e:
+        error_msg = f"PPTX → MD 변환 실패: {str(e)}"
+        log_callback(error_msg)
+        return False, error_msg
+
+def convert_md_to_pdf(md_path, output_path, log_callback):
+    """MD를 PDF로 변환"""
+    try:
+        log_callback(f"MD → PDF 변환 시작: {md_path}")
+        pypandoc.convert_file(md_path, 'pdf', outputfile=output_path)
+        log_callback(f"변환 완료: {output_path}")
+        return True, output_path
+    except Exception as e:
+        error_msg = f"MD → PDF 변환 실패: {str(e)}"
+        log_callback(error_msg)
+        return False, error_msg
+
+def convert_md_to_docx(md_path, output_path, log_callback):
+    """MD를 DOCX로 변환"""
+    try:
+        log_callback(f"MD → DOCX 변환 시작: {md_path}")
+        pypandoc.convert_file(md_path, 'docx', outputfile=output_path)
+        log_callback(f"변환 완료: {output_path}")
+        return True, output_path
+    except Exception as e:
+        error_msg = f"MD → DOCX 변환 실패: {str(e)}"
+        log_callback(error_msg)
+        return False, error_msg
+
+def convert_md_to_pptx(md_path, output_path, log_callback):
+    """MD를 PPTX로 변환"""
+    try:
+        log_callback(f"MD → PPTX 변환 시작: {md_path}")
+        
+        with open(md_path, 'r', encoding='utf-8') as f:
+            md_content = f.read()
+        
+        html = markdown.markdown(md_content)
+        
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[1])
+        title = slide.shapes.title
+        content = slide.placeholders[1]
+        
+        title.text = os.path.splitext(os.path.basename(md_path))[0]
+        content.text = md_content[:1000] + "..." if len(md_content) > 1000 else md_content
+        
+        prs.save(output_path)
+        
+        log_callback(f"변환 완료: {output_path}")
+        return True, output_path
+    except Exception as e:
+        error_msg = f"MD → PPTX 변환 실패: {str(e)}"
+        log_callback(error_msg)
+        return False, error_msg
+
+def convert_document(input_file, output_format, log_callback):
+    """문서 변환 메인 함수"""
+    input_ext = os.path.splitext(input_file)[1].lower()
+    base_name = os.path.splitext(input_file)[0]
+    output_file = f"{base_name}.{output_format.lower()}"
+    
+    conversion_map = {
+        ('.pdf', 'docx'): convert_pdf_to_docx,
+        ('.pdf', 'md'): convert_pdf_to_md,
+        ('.pdf', 'pptx'): convert_pdf_to_pptx,
+        ('.docx', 'pdf'): convert_docx_to_pdf,
+        ('.docx', 'md'): convert_docx_to_md,
+        ('.docx', 'pptx'): convert_docx_to_pptx,
+        ('.pptx', 'pdf'): convert_pptx_to_pdf,
+        ('.pptx', 'docx'): convert_pptx_to_docx,
+        ('.pptx', 'md'): convert_pptx_to_md,
+        ('.md', 'pdf'): convert_md_to_pdf,
+        ('.md', 'docx'): convert_md_to_docx,
+        ('.md', 'pptx'): convert_md_to_pptx,
+    }
+    
+    conversion_key = (input_ext, output_format.lower())
+    
+    if conversion_key not in conversion_map:
+        error_msg = f"지원하지 않는 변환: {input_ext} → {output_format}"
+        log_callback(error_msg)
+        return False, error_msg
+    
+    if input_ext == f".{output_format.lower()}":
+        error_msg = "입력 파일과 출력 형식이 동일합니다"
+        log_callback(error_msg)
+        return False, error_msg
+    
+    return conversion_map[conversion_key](input_file, output_file, log_callback)
+
 class MediaDownloaderConverterGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("YouTube 다운로더 & 미디어 변환기")
+        self.root.title("YouTube 다운로더 & 미디어/문서 변환기")
         self.root.geometry("800x520")
         self.root.minsize(800, 520)
         self.setup_ui()
@@ -334,10 +857,12 @@ class MediaDownloaderConverterGUI:
         self.tab2 = ttk.Frame(tab_control)
         self.tab3 = ttk.Frame(tab_control)
         self.tab4 = ttk.Frame(tab_control)
+        self.tab5 = ttk.Frame(tab_control)
         tab_control.add(self.tab1, text='YouTube 다운로드')
         tab_control.add(self.tab2, text='미디어 변환')
         tab_control.add(self.tab3, text='영상 분할')
         tab_control.add(self.tab4, text='미디어 합치기')
+        tab_control.add(self.tab5, text='문서 변환')
         tab_control.pack(expand=1, fill='both')
 
         # --- Tab 1: YouTube 다운로드 ---
@@ -521,6 +1046,42 @@ class MediaDownloaderConverterGUI:
         self.merge_btn = ttk.Button(self.tab4, text="합치기", command=self.start_merge)
         self.merge_btn.grid(row=2, column=3, padx=5)
 
+        # --- Tab 5: 문서 변환 ---
+        ttk.Label(self.tab5, text="입력 문서:").grid(row=0, column=0, sticky=tk.W, pady=5, padx=5)
+        self.doc_input_entry = ttk.Entry(self.tab5, width=50)
+        self.doc_input_entry.grid(row=0, column=1, pady=5, sticky=(tk.W, tk.E))
+        ttk.Button(self.tab5, text="찾아보기", command=self.browse_doc_input).grid(row=0, column=2, padx=5)
+        ttk.Button(self.tab5, text="폴더 열기", command=self.open_doc_input_folder).grid(row=0, column=3, padx=5)
+
+        ttk.Label(self.tab5, text="변환할 형식:").grid(row=1, column=0, sticky=tk.W, pady=5, padx=5)
+        self.doc_output_format_var = tk.StringVar(value="pdf")
+        self.doc_format_combo = ttk.Combobox(self.tab5, textvariable=self.doc_output_format_var, width=15)
+        self.doc_format_combo['values'] = ('pdf', 'docx', 'pptx', 'md')
+        self.doc_format_combo.grid(row=1, column=1, sticky=tk.W, pady=5)
+
+        # 지원 형식 안내
+        support_frame = ttk.LabelFrame(self.tab5, text="지원 형식", padding="10")
+        support_frame.grid(row=2, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=10, padx=5)
+        
+        support_text = """• PDF ↔ DOCX, MD, PPTX
+• DOCX ↔ PDF, MD, PPTX  
+• PPTX ↔ PDF, DOCX, MD
+• MD ↔ PDF, DOCX, PPTX
+※ 한글(.hwp) 지원을 위해서는 별도 변환기가 필요합니다."""
+        
+        ttk.Label(support_frame, text=support_text, justify=tk.LEFT).pack(anchor=tk.W)
+
+        # 문서 변환 진행률 표시바 및 버튼
+        doc_action_frame = ttk.Frame(self.tab5)
+        doc_action_frame.grid(row=3, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=10)
+        
+        self.doc_progress_var = tk.DoubleVar()
+        self.doc_progress_bar = ttk.Progressbar(doc_action_frame, variable=self.doc_progress_var, maximum=100, length=300)
+        self.doc_progress_bar.grid(row=0, column=0, padx=5, sticky=(tk.W, tk.E))
+        
+        self.doc_convert_btn = ttk.Button(doc_action_frame, text="변환", command=self.start_doc_convert)
+        self.doc_convert_btn.grid(row=0, column=1, padx=5)
+
         # --- Status & Log ---
         self.status_label = ttk.Label(self.root, text="대기 중...", relief=tk.SUNKEN, anchor=tk.W)
         self.status_label.pack(side=tk.BOTTOM, fill=tk.X)
@@ -539,12 +1100,15 @@ class MediaDownloaderConverterGUI:
             self.tab2.columnconfigure(i, weight=1)
             self.tab3.columnconfigure(i, weight=1)
             self.tab4.columnconfigure(i, weight=1)
+            self.tab5.columnconfigure(i, weight=1)
         self.tab1.rowconfigure(10, weight=1)
         self.tab2.rowconfigure(2, weight=1)
         self.tab3.rowconfigure(4, weight=1)
         self.tab4.rowconfigure(0, weight=1)
+        self.tab5.rowconfigure(4, weight=1)
         self.single_file_frame.columnconfigure(0, weight=1)
         options_frame.columnconfigure(2, weight=1)
+        doc_action_frame.columnconfigure(0, weight=1)
 
     def browse_save_path(self):
         folder = filedialog.askdirectory(initialdir=str(Path.home() / "Downloads"))
@@ -971,6 +1535,91 @@ class MediaDownloaderConverterGUI:
             self.set_status("합치기 오류")
             messagebox.showerror("오류", result)
         self.set_status("대기 중...")
+
+    # 문서 변환 관련 메서드들
+    def browse_doc_input(self):
+        file = filedialog.askopenfilename(
+            title="변환할 문서 선택",
+            filetypes=[
+                ("문서 파일", "*.pdf *.docx *.pptx *.md"),
+                ("PDF 파일", "*.pdf"),
+                ("Word 문서", "*.docx"),
+                ("PowerPoint", "*.pptx"),
+                ("Markdown", "*.md"),
+                ("모든 파일", "*.*")
+            ]
+        )
+        if file:
+            self.doc_input_entry.delete(0, tk.END)
+            self.doc_input_entry.insert(0, file)
+
+    def open_doc_input_folder(self):
+        file_path = self.doc_input_entry.get().strip()
+        if not file_path or not os.path.exists(file_path):
+            messagebox.showerror("오류", "입력 파일을 먼저 선택하세요.")
+            return
+        folder = os.path.dirname(file_path)
+        if not os.path.exists(folder):
+            messagebox.showerror("오류", "폴더가 존재하지 않습니다.")
+            return
+        try:
+            if sys.platform == "win32":
+                os.startfile(folder)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", folder])
+            else:
+                subprocess.Popen(["xdg-open", folder])
+        except Exception as e:
+            messagebox.showerror("오류", f"폴더를 열 수 없습니다: {e}")
+
+    def start_doc_convert(self):
+        input_file = self.doc_input_entry.get().strip()
+        output_format = self.doc_output_format_var.get().strip()
+        
+        if not input_file or not os.path.exists(input_file):
+            messagebox.showerror("오류", "입력 파일을 선택하세요.")
+            return
+        
+        if not output_format:
+            messagebox.showerror("오류", "출력 형식을 선택하세요.")
+            return
+        
+        # 파일 확장자 확인
+        input_ext = os.path.splitext(input_file)[1].lower()
+        supported_inputs = ['.pdf', '.docx', '.pptx', '.md']
+        
+        if input_ext not in supported_inputs:
+            messagebox.showerror("오류", f"지원하지 않는 파일 형식입니다: {input_ext}")
+            return
+        
+        if input_ext == f".{output_format.lower()}":
+            messagebox.showerror("오류", "입력 파일과 출력 형식이 동일합니다.")
+            return
+        
+        self.doc_progress_var.set(0)
+        self.set_status("문서 변환 중...")
+        threading.Thread(target=self._convert_document, args=(input_file, output_format), daemon=True).start()
+
+    def _convert_document(self, input_file, output_format):
+        try:
+            self.doc_progress_var.set(50)
+            self.root.update()
+            
+            success, result = convert_document(input_file, output_format, self.log_message)
+            
+            if success:
+                self.doc_progress_var.set(100)
+                self.set_status("문서 변환 완료!")
+                messagebox.showinfo("완료", f"문서 변환 완료!\n출력: {result}")
+            else:
+                self.set_status("문서 변환 오류")
+                messagebox.showerror("오류", result)
+        except Exception as e:
+            self.set_status("문서 변환 오류")
+            self.log_message(f"문서 변환 중 오류: {str(e)}")
+            messagebox.showerror("오류", f"문서 변환 중 오류가 발생했습니다: {str(e)}")
+        finally:
+            self.set_status("대기 중...")
 
 def main():
     root = tk.Tk()
