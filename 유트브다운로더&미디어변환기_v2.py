@@ -870,13 +870,11 @@ class MediaDownloaderConverterGUI:
         self.tab3 = ttk.Frame(tab_control)
         self.tab4 = ttk.Frame(tab_control)
         self.tab5 = ttk.Frame(tab_control)
-        self.tab6 = ttk.Frame(tab_control)
         tab_control.add(self.tab1, text='YouTube 다운로드')
         tab_control.add(self.tab2, text='미디어 변환')
         tab_control.add(self.tab3, text='영상 분할')
         tab_control.add(self.tab4, text='미디어 합치기')
         tab_control.add(self.tab5, text='문서 변환')
-        tab_control.add(self.tab6, text='Git 자동 푸시')
         tab_control.pack(expand=1, fill='both')
 
         # --- Tab 1: YouTube 다운로드 ---
@@ -1096,15 +1094,6 @@ class MediaDownloaderConverterGUI:
         self.doc_convert_btn = ttk.Button(doc_action_frame, text="변환", command=self.start_doc_convert)
         self.doc_convert_btn.grid(row=0, column=1, padx=5)
 
-        # --- Tab 6: Git 자동 푸시 ---
-        if GIT_HELPER_AVAILABLE:
-            self.setup_git_tab()
-        else:
-            # Show message if Git helper is not available
-            ttk.Label(self.tab6, text="Git 자동 푸시 기능을 사용할 수 없습니다.", 
-                     font=('TkDefaultFont', 12)).grid(row=0, column=0, pady=20, padx=20)
-            ttk.Label(self.tab6, text="git_helper.py 및 load_env.py 파일이 필요합니다.", 
-                     font=('TkDefaultFont', 10)).grid(row=1, column=0, pady=5, padx=20)
 
         # --- Status & Log ---
         self.status_label = ttk.Label(self.root, text="대기 중...", relief=tk.SUNKEN, anchor=tk.W)
@@ -1125,13 +1114,11 @@ class MediaDownloaderConverterGUI:
             self.tab3.columnconfigure(i, weight=1)
             self.tab4.columnconfigure(i, weight=1)
             self.tab5.columnconfigure(i, weight=1)
-            self.tab6.columnconfigure(i, weight=1)
         self.tab1.rowconfigure(10, weight=1)
         self.tab2.rowconfigure(2, weight=1)
         self.tab3.rowconfigure(4, weight=1)
         self.tab4.rowconfigure(0, weight=1)
         self.tab5.rowconfigure(4, weight=1)
-        self.tab6.rowconfigure(2, weight=1)
         self.single_file_frame.columnconfigure(0, weight=1)
         options_frame.columnconfigure(2, weight=1)
         doc_action_frame.columnconfigure(0, weight=1)
@@ -1647,182 +1634,6 @@ class MediaDownloaderConverterGUI:
         finally:
             self.set_status("대기 중...")
 
-    def setup_git_tab(self):
-        """Setup Git auto-push tab UI"""
-        # Initialize Git helper
-        self.git_helper = GitHelper()
-        
-        # Git status frame
-        status_frame = ttk.LabelFrame(self.tab6, text="Git 저장소 상태", padding="10")
-        status_frame.grid(row=0, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=10, padx=10)
-        
-        self.git_status_text = tk.Text(status_frame, height=6, width=70, state=tk.DISABLED)
-        git_status_scrollbar = ttk.Scrollbar(status_frame, orient=tk.VERTICAL, command=self.git_status_text.yview)
-        self.git_status_text.configure(yscrollcommand=git_status_scrollbar.set)
-        self.git_status_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        git_status_scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
-        
-        ttk.Button(status_frame, text="상태 새로고침", command=self.refresh_git_status).grid(row=1, column=0, pady=5, sticky=tk.W)
-        
-        # Commit message frame
-        commit_frame = ttk.LabelFrame(self.tab6, text="커밋 메시지", padding="10")
-        commit_frame.grid(row=1, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=5, padx=10)
-        
-        ttk.Label(commit_frame, text="커밋 메시지:").grid(row=0, column=0, sticky=tk.W, padx=5)
-        self.commit_message_var = tk.StringVar(value="Auto-commit: 애플리케이션 업데이트")
-        self.commit_message_entry = ttk.Entry(commit_frame, textvariable=self.commit_message_var, width=60)
-        self.commit_message_entry.grid(row=0, column=1, padx=5, sticky=(tk.W, tk.E))
-        
-        commit_frame.columnconfigure(1, weight=1)
-        
-        # Auto-push controls frame
-        controls_frame = ttk.Frame(self.tab6)
-        controls_frame.grid(row=2, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=10, padx=10)
-        
-        # Auto-push settings
-        self.auto_push_enabled = tk.BooleanVar(value=False)
-        ttk.Checkbutton(controls_frame, text="자동 푸시 활성화", 
-                       variable=self.auto_push_enabled).grid(row=0, column=0, sticky=tk.W, padx=5)
-        
-        # Push buttons
-        button_frame = ttk.Frame(controls_frame)
-        button_frame.grid(row=1, column=0, columnspan=3, pady=10, sticky=(tk.W, tk.E))
-        
-        self.git_push_btn = ttk.Button(button_frame, text="지금 푸시", command=self.manual_git_push)
-        self.git_push_btn.grid(row=0, column=0, padx=5)
-        
-        ttk.Button(button_frame, text="설정 확인", command=self.check_git_config).grid(row=0, column=1, padx=5)
-        ttk.Button(button_frame, text="저장소 열기", command=self.open_repository).grid(row=0, column=2, padx=5)
-        
-        # Progress bar for Git operations
-        self.git_progress_var = tk.DoubleVar()
-        self.git_progress_bar = ttk.Progressbar(controls_frame, variable=self.git_progress_var, maximum=100, length=400)
-        self.git_progress_bar.grid(row=2, column=0, columnspan=3, pady=5, sticky=(tk.W, tk.E))
-        
-        controls_frame.columnconfigure(0, weight=1)
-        
-        # Initial status refresh
-        self.refresh_git_status()
-
-    def refresh_git_status(self):
-        """Refresh Git status display"""
-        self.git_status_text.config(state=tk.NORMAL)
-        self.git_status_text.delete(1.0, tk.END)
-        
-        try:
-            # Check dependencies
-            deps = self.git_helper.check_dependencies()
-            status_info = []
-            
-            status_info.append(f"🔧 Git 사용 가능: {'✅' if deps['git_available'] else '❌'}")
-            if deps['git_available']:
-                status_info.append(f"   버전: {deps['git_version']}")
-            
-            status_info.append(f"🔑 GitHub 토큰: {'✅ 설정됨' if deps['token_set'] else '❌ 미설정'}")
-            status_info.append(f"📁 Git 저장소: {'✅' if deps['repo_exists'] else '❌'}")
-            
-            if deps['repo_exists']:
-                # Get detailed status
-                git_status = self.git_helper.get_git_status()
-                if 'error' not in git_status:
-                    status_info.append(f"\n📋 현재 브랜치: {git_status['current_branch']}")
-                    status_info.append(f"🔄 변경사항: {'있음 ({})'.format(len(git_status['changes'])) if git_status['has_changes'] else '없음'}")
-                    status_info.append(f"💾 마지막 커밋: {git_status['last_commit']}")
-                    
-                    if git_status['has_changes']:
-                        status_info.append("\n📝 변경된 파일들:")
-                        for change in git_status['changes'][:10]:  # Show first 10 changes
-                            if change.strip():
-                                status_info.append(f"  {change}")
-                        if len(git_status['changes']) > 10:
-                            status_info.append(f"  ... 외 {len(git_status['changes']) - 10}개 파일")
-                else:
-                    status_info.append(f"\n❌ Git 상태 오류: {git_status['error']}")
-            
-            self.git_status_text.insert(1.0, '\n'.join(status_info))
-            
-        except Exception as e:
-            self.git_status_text.insert(1.0, f"❌ 상태 확인 오류: {str(e)}")
-        finally:
-            self.git_status_text.config(state=tk.DISABLED)
-
-    def manual_git_push(self):
-        """Manually trigger Git push"""
-        commit_message = self.commit_message_var.get().strip()
-        if not commit_message:
-            messagebox.showerror("오류", "커밋 메시지를 입력하세요.")
-            return
-        
-        self.git_progress_var.set(0)
-        self.git_push_btn.config(state=tk.DISABLED)
-        self.set_status("Git 푸시 중...")
-        
-        threading.Thread(target=self._perform_git_push, args=(commit_message,), daemon=True).start()
-
-    def _perform_git_push(self, commit_message):
-        """Perform Git push in background thread"""
-        try:
-            self.git_progress_var.set(25)
-            self.root.update()
-            
-            success, result = self.git_helper.auto_push(commit_message, self.log_message)
-            
-            self.git_progress_var.set(100)
-            self.root.update()
-            
-            if success:
-                self.set_status("Git 푸시 완료!")
-                messagebox.showinfo("완료", f"Git 푸시 완료!\n{result}")
-                self.refresh_git_status()
-            else:
-                self.set_status("Git 푸시 실패")
-                messagebox.showerror("오류", f"Git 푸시 실패:\n{result}")
-                
-        except Exception as e:
-            self.set_status("Git 푸시 오류")
-            self.log_message(f"Git 푸시 중 오류: {str(e)}")
-            messagebox.showerror("오류", f"Git 푸시 중 오류가 발생했습니다:\n{str(e)}")
-        finally:
-            self.git_push_btn.config(state=tk.NORMAL)
-            self.git_progress_var.set(0)
-            self.set_status("대기 중...")
-
-    def check_git_config(self):
-        """Check Git configuration"""
-        deps = self.git_helper.check_dependencies()
-        
-        config_info = []
-        config_info.append(f"Git 설치: {'✅' if deps['git_available'] else '❌'}")
-        config_info.append(f"GitHub 토큰: {'✅' if deps['token_set'] else '❌'}")
-        config_info.append(f"Git 저장소: {'✅' if deps['repo_exists'] else '❌'}")
-        
-        repo_url = os.getenv('GITHUB_REPO_URL', 'URL 없음')
-        config_info.append(f"\n저장소 URL: {repo_url}")
-        
-        if not deps['token_set']:
-            config_info.append("\n⚠️  GitHub 토큰이 설정되지 않았습니다.")
-            config_info.append("   .env 파일에 GITHUB_TOKEN을 설정하세요.")
-        
-        messagebox.showinfo("Git 설정 확인", '\n'.join(config_info))
-
-    def open_repository(self):
-        """Open repository folder in file manager"""
-        repo_path = self.git_helper.repo_path
-        try:
-            if sys.platform == "win32":
-                os.startfile(str(repo_path))
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", str(repo_path)])
-            else:
-                subprocess.Popen(["xdg-open", str(repo_path)])
-        except Exception as e:
-            messagebox.showerror("오류", f"저장소 폴더를 열 수 없습니다: {e}")
-
-    def auto_push_on_save(self):
-        """Automatically push when enabled and changes are made"""
-        if GIT_HELPER_AVAILABLE and hasattr(self, 'auto_push_enabled') and self.auto_push_enabled.get():
-            commit_message = f"Auto-save: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            threading.Thread(target=self._perform_git_push, args=(commit_message,), daemon=True).start()
 
 def main():
     root = tk.Tk()
