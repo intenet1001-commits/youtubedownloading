@@ -820,6 +820,91 @@ def convert_md_to_pptx(md_path, output_path, log_callback):
         log_callback(error_msg)
         return False, error_msg
 
+def convert_html_to_pdf(html_path, output_path, log_callback):
+    """HTML을 PDF로 변환"""
+    try:
+        log_callback(f"HTML → PDF 변환 시작: {html_path}")
+        pypandoc.convert_file(html_path, 'pdf', outputfile=output_path)
+        log_callback(f"변환 완료: {output_path}")
+        return True, output_path
+    except Exception as e:
+        error_msg = f"HTML → PDF 변환 실패: {str(e)}"
+        log_callback(error_msg)
+        return False, error_msg
+
+def convert_html_to_docx(html_path, output_path, log_callback):
+    """HTML을 DOCX로 변환"""
+    try:
+        log_callback(f"HTML → DOCX 변환 시작: {html_path}")
+        pypandoc.convert_file(html_path, 'docx', outputfile=output_path)
+        log_callback(f"변환 완료: {output_path}")
+        return True, output_path
+    except Exception as e:
+        error_msg = f"HTML → DOCX 변환 실패: {str(e)}"
+        log_callback(error_msg)
+        return False, error_msg
+
+def convert_html_to_md(html_path, output_path, log_callback):
+    """HTML을 Markdown으로 변환"""
+    try:
+        log_callback(f"HTML → MD 변환 시작: {html_path}")
+        pypandoc.convert_file(html_path, 'md', outputfile=output_path)
+        log_callback(f"변환 완료: {output_path}")
+        return True, output_path
+    except Exception as e:
+        error_msg = f"HTML → MD 변환 실패: {str(e)}"
+        log_callback(error_msg)
+        return False, error_msg
+
+def convert_pdf_to_html(pdf_path, output_path, log_callback):
+    """PDF를 HTML로 변환"""
+    try:
+        log_callback(f"PDF → HTML 변환 시작: {pdf_path}")
+        
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as temp_file:
+            with open(pdf_path, 'rb') as file:
+                reader = PyPDF2.PdfReader(file)
+                text_content = ""
+                for page in reader.pages:
+                    text_content += page.extract_text() + "\n\n"
+            
+            temp_file.write(text_content)
+            temp_md_path = temp_file.name
+        
+        pypandoc.convert_file(temp_md_path, 'html', outputfile=output_path)
+        os.unlink(temp_md_path)
+        
+        log_callback(f"변환 완료: {output_path}")
+        return True, output_path
+    except Exception as e:
+        error_msg = f"PDF → HTML 변환 실패: {str(e)}"
+        log_callback(error_msg)
+        return False, error_msg
+
+def convert_docx_to_html(docx_path, output_path, log_callback):
+    """DOCX를 HTML로 변환"""
+    try:
+        log_callback(f"DOCX → HTML 변환 시작: {docx_path}")
+        pypandoc.convert_file(docx_path, 'html', outputfile=output_path)
+        log_callback(f"변환 완료: {output_path}")
+        return True, output_path
+    except Exception as e:
+        error_msg = f"DOCX → HTML 변환 실패: {str(e)}"
+        log_callback(error_msg)
+        return False, error_msg
+
+def convert_md_to_html(md_path, output_path, log_callback):
+    """Markdown을 HTML로 변환"""
+    try:
+        log_callback(f"MD → HTML 변환 시작: {md_path}")
+        pypandoc.convert_file(md_path, 'html', outputfile=output_path)
+        log_callback(f"변환 완료: {output_path}")
+        return True, output_path
+    except Exception as e:
+        error_msg = f"MD → HTML 변환 실패: {str(e)}"
+        log_callback(error_msg)
+        return False, error_msg
+
 def convert_document(input_file, output_format, log_callback):
     """문서 변환 메인 함수"""
     input_ext = os.path.splitext(input_file)[1].lower()
@@ -830,15 +915,21 @@ def convert_document(input_file, output_format, log_callback):
         ('.pdf', 'docx'): convert_pdf_to_docx,
         ('.pdf', 'md'): convert_pdf_to_md,
         ('.pdf', 'pptx'): convert_pdf_to_pptx,
+        ('.pdf', 'html'): convert_pdf_to_html,
         ('.docx', 'pdf'): convert_docx_to_pdf,
         ('.docx', 'md'): convert_docx_to_md,
         ('.docx', 'pptx'): convert_docx_to_pptx,
+        ('.docx', 'html'): convert_docx_to_html,
         ('.pptx', 'pdf'): convert_pptx_to_pdf,
         ('.pptx', 'docx'): convert_pptx_to_docx,
         ('.pptx', 'md'): convert_pptx_to_md,
         ('.md', 'pdf'): convert_md_to_pdf,
         ('.md', 'docx'): convert_md_to_docx,
         ('.md', 'pptx'): convert_md_to_pptx,
+        ('.md', 'html'): convert_md_to_html,
+        ('.html', 'pdf'): convert_html_to_pdf,
+        ('.html', 'docx'): convert_html_to_docx,
+        ('.html', 'md'): convert_html_to_md,
     }
     
     conversion_key = (input_ext, output_format.lower())
@@ -1068,17 +1159,18 @@ class MediaDownloaderConverterGUI:
         ttk.Label(self.tab5, text="변환할 형식:").grid(row=1, column=0, sticky=tk.W, pady=5, padx=5)
         self.doc_output_format_var = tk.StringVar(value="pdf")
         self.doc_format_combo = ttk.Combobox(self.tab5, textvariable=self.doc_output_format_var, width=15)
-        self.doc_format_combo['values'] = ('pdf', 'docx', 'pptx', 'md')
+        self.doc_format_combo['values'] = ('pdf', 'docx', 'pptx', 'md', 'html')
         self.doc_format_combo.grid(row=1, column=1, sticky=tk.W, pady=5)
 
         # 지원 형식 안내
         support_frame = ttk.LabelFrame(self.tab5, text="지원 형식", padding="10")
         support_frame.grid(row=2, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=10, padx=5)
         
-        support_text = """• PDF ↔ DOCX, MD, PPTX
-• DOCX ↔ PDF, MD, PPTX  
+        support_text = """• PDF ↔ DOCX, MD, PPTX, HTML
+• DOCX ↔ PDF, MD, PPTX, HTML  
 • PPTX ↔ PDF, DOCX, MD
-• MD ↔ PDF, DOCX, PPTX
+• MD ↔ PDF, DOCX, PPTX, HTML
+• HTML ↔ PDF, DOCX, MD
 ※ 한글(.hwp) 지원을 위해서는 별도 변환기가 필요합니다."""
         
         ttk.Label(support_frame, text=support_text, justify=tk.LEFT).pack(anchor=tk.W)
@@ -1554,11 +1646,12 @@ class MediaDownloaderConverterGUI:
         file = filedialog.askopenfilename(
             title="변환할 문서 선택",
             filetypes=[
-                ("문서 파일", "*.pdf *.docx *.pptx *.md"),
+                ("문서 파일", "*.pdf *.docx *.pptx *.md *.html"),
                 ("PDF 파일", "*.pdf"),
                 ("Word 문서", "*.docx"),
                 ("PowerPoint", "*.pptx"),
                 ("Markdown", "*.md"),
+                ("HTML 파일", "*.html"),
                 ("모든 파일", "*.*")
             ]
         )
